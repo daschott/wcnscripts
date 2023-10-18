@@ -178,7 +178,7 @@ if ($res)
     ctr -n "k8s.io" c ls > containers.txt
 }
 
-function CountAvailableEphemeralPorts([string]$protocol = "TCP", [uint32]$portRangeSize = 64) {
+function CountAvailableEphemeralPorts([string]$protocol = "TCP", [uint32]$portRangeSize = 64, [string]$family="IPv4") {
     # First, remove all the text bells and whistle (plain text, table headers, dashes, empty lines, ...) from netsh output 
     $tcpRanges = (netsh int ipv4 sh excludedportrange $protocol) -replace "[^0-9,\ ]",'' | ? {$_.trim() -ne "" }
  
@@ -192,7 +192,12 @@ function CountAvailableEphemeralPorts([string]$protocol = "TCP", [uint32]$portRa
 
     # Find the external interface
     $externalInterfaceIdx = (Get-NetRoute -DestinationPrefix "0.0.0.0/0")[0].InterfaceIndex
-    $hostIP = (Get-NetIPConfiguration -ifIndex $externalInterfaceIdx).IPv4Address.IPAddress
+    if ($family.ToLower().Contains("v4")){
+        $hostIP = (Get-NetIPConfiguration -ifIndex $externalInterfaceIdx).IPv4Address.IPAddress
+    } else {
+        $hostIP = (Get-NetIPConfiguration -ifIndex $externalInterfaceIdx).IPv6Address.IPAddress
+    }
+    echo "Using host IP $hostIP"
 
     # Extract the used TCP ports from the external interface
     $usedTcpPorts  = (Get-NetTCPConnection -LocalAddress $hostIP -ErrorAction Ignore).LocalPort
@@ -243,16 +248,29 @@ function CountAvailableEphemeralPorts([string]$protocol = "TCP", [uint32]$portRa
     return $freeRangesCount
 }
 
-$availableRangesFor64PortChunks = CountAvailableEphemeralPorts
+$availableRangesFor64PortChunksv4 = CountAvailableEphemeralPorts -protocol "TCP" -portRangeSize 64 -family "IPv4"
+$availableRangesFor64PortChunksv6 = CountAvailableEphemeralPorts -protocol "TCP" -portRangeSize 64 -family "IPv6"
 
-if ($availableRangesFor64PortChunks -le 0) {
+if (($availableRangesFor64PortChunksv4 -le 0) -or ($availableRangesFor64PortChunksv6 -le 0)) {
     echo "ERROR: Running out of ephemeral ports. The ephemeral ports range doesn't have enough resources to allow allocating 64 contiguous TCP ports." > reservedports.txt
 } else {
     # There is unfortunately no exact way to calculate the ephemeral port ranges availability. 
     # The calculation done in this script gives a very coarse estimate that may yield overly optimistic reasults on some systems.
     # Use this data with caution.
-    echo "Rough estimation of the ephemeral port availability: up to $availableRangesFor64PortChunks allocations of 64 contiguous TCP ports may be possible" > reservedports.txt
+    echo "Rough estimation of the ephemeral port availability: up to $availableRangesFor64PortChunksv4 allocations of 64 contiguous TCP ports may be possible" > reservedports.txt
+    echo "Rough estimation of the ephemeral port availability: up to $availableRangesFor64PortChunksv6 allocations of 64 contiguous TCP ports may be possible" >> reservedports.txt
 }
+
+if (($availableRangesFor64PortChunksv4 -le 0) -or ($availableRangesFor64PortChunksv6 -le 0)) {
+    echo "ERROR: Running out of ephemeral ports. The ephemeral ports range doesn't have enough resources to allow allocating 64 contiguous TCP ports." > reservedports.txt
+} else {
+    # There is unfortunately no exact way to calculate the ephemeral port ranges availability. 
+    # The calculation done in this script gives a very coarse estimate that may yield overly optimistic reasults on some systems.
+    # Use this data with caution.
+    echo "Rough estimation of the ephemeral port availability: up to $availableRangesFor64PortChunksv4 allocations of 64 contiguous TCP ports may be possible" > reservedports.txt
+    echo "Rough estimation of the ephemeral port availability: up to $availableRangesFor64PortChunksv6 allocations of 64 contiguous TCP ports may be possible" >> reservedports.txt
+}
+
 
 # The following scripts attempts to reserve a few ranges of 64 ephemeral ports. 
 # Results produced by this test can accurately tell whether a system has room for reserving 64 contiguous port pools or not.
